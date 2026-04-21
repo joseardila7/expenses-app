@@ -56,11 +56,7 @@ export function CreateParticipantForm({ groupId }: Required<GroupFormProps>) {
   );
 }
 
-export function CreateExpenseForm({
-  groupId,
-  participants,
-  schemaMode,
-}: ExpenseFormProps) {
+export function CreateExpenseForm({ groupId, participants, schemaMode }: ExpenseFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const [state, formAction] = useActionState(createExpense, initialActionState);
   const isAdvanced = schemaMode === "advanced" && participants.length > 0;
@@ -118,11 +114,7 @@ export function CreateExpenseForm({
             </div>
           </fieldset>
         </>
-      ) : (
-        <p className="notice-inline">
-          Este gasto se guardará en modo básico. Para activar pagador y reparto, aplica la migración avanzada.
-        </p>
-      )}
+      ) : null}
 
       {schemaMode === "advanced" && participants.length === 0 ? (
         <p className="notice-inline">
@@ -171,10 +163,7 @@ function FormFeedback({ state }: { state: ActionState }) {
   );
 }
 
-function useResetOnSuccess(
-  formRef: RefObject<HTMLFormElement | null>,
-  state: ActionState,
-) {
+function useResetOnSuccess(formRef: RefObject<HTMLFormElement | null>, state: ActionState) {
   useEffect(() => {
     if (state.status === "success") {
       formRef.current?.reset();

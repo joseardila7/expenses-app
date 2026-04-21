@@ -3,12 +3,15 @@ import { GroupCard } from "@/components/group-card";
 import { EmptyPanel } from "@/components/empty-panel";
 import { ErrorPanel } from "@/components/error-panel";
 import { UpgradeNotice } from "@/components/upgrade-notice";
+import { UserSession } from "@/components/user-session";
+import { requireAuthenticatedProfile } from "@/lib/auth";
 import { formatCurrency, formatShortDate } from "@/lib/format";
 import { getDashboardData } from "@/lib/supabase-data";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
+  const user = await requireAuthenticatedProfile();
   const result = await getDashboardData();
 
   if (result.error) {
@@ -42,11 +45,14 @@ export default async function Page() {
       <header className="app-bar">
         <div>
           <p className="app-bar__kicker">Gastos App</p>
-          <strong>Control compartido, claro y elegante.</strong>
+          <strong>Hola, {user.displayName}. Este es tu espacio privado.</strong>
         </div>
-        <span className="app-bar__status">
-          {schemaMode === "advanced" ? "Balances activados" : "Modo básico activo"}
-        </span>
+        <div className="app-bar__actions">
+          <span className="app-bar__status">
+            {schemaMode === "advanced" ? "Balances activados" : "Modo básico activo"}
+          </span>
+          <UserSession displayName={user.displayName} email={user.email} />
+        </div>
       </header>
 
       {schemaMode === "legacy" ? <UpgradeNotice /> : null}
@@ -136,7 +142,7 @@ export default async function Page() {
               ))}
             </div>
           ) : (
-            <p className="empty-state">Aún no hay grupos guardados.</p>
+            <p className="empty-state">Aún no hay grupos guardados en tu cuenta.</p>
           )}
         </div>
 

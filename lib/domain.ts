@@ -4,6 +4,7 @@ export type GroupRecord = {
   id: string;
   name: string;
   created_at: string;
+  deleted_at: string | null;
 };
 
 export type ParticipantRecord = {
@@ -95,6 +96,7 @@ export type GroupSummary = {
   balances: ParticipantBalance[];
   settlements: Settlement[];
   canDeleteGroup: boolean;
+  paymentsEnabled: boolean;
 };
 
 export type DashboardData = {

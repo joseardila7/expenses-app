@@ -5,11 +5,13 @@ import { deleteGroup } from "@/app/actions";
 import { BalanceSummary } from "@/components/balance-summary";
 import { ConfirmAction } from "@/components/confirm-action";
 import { CreateExpenseForm, CreateParticipantForm } from "@/components/forms";
+import { ErrorPanel } from "@/components/error-panel";
 import { ExpenseList } from "@/components/expense-list";
 import { ParticipantsPanel } from "@/components/participants-panel";
 import { PaymentsList } from "@/components/payments-list";
-import { ErrorPanel } from "@/components/error-panel";
 import { UpgradeNotice } from "@/components/upgrade-notice";
+import { UserSession } from "@/components/user-session";
+import { requireAuthenticatedProfile } from "@/lib/auth";
 import { formatCurrency } from "@/lib/format";
 import { getGroupData } from "@/lib/supabase-data";
 
@@ -18,6 +20,7 @@ type GroupPageProps = {
 };
 
 export default async function GroupPage({ params }: GroupPageProps) {
+  const user = await requireAuthenticatedProfile();
   const { groupId } = await params;
   const result = await getGroupData(groupId);
 
@@ -50,6 +53,7 @@ export default async function GroupPage({ params }: GroupPageProps) {
           <span className="app-bar__status">
             {snapshot.schemaMode === "advanced" ? "Balances activos" : "Modo básico"}
           </span>
+          <UserSession displayName={user.displayName} email={user.email} />
           <ConfirmAction
             action={deleteGroup}
             title={`Eliminar ${snapshot.group.name}`}
@@ -108,6 +112,7 @@ export default async function GroupPage({ params }: GroupPageProps) {
             settlements={snapshot.settlements}
             incompleteExpenseCount={snapshot.incompleteExpenseCount}
             groupId={snapshot.group.id}
+            paymentsEnabled={snapshot.paymentsEnabled}
           />
           <PaymentsList payments={snapshot.payments} />
           <ExpenseList expenses={snapshot.expenses} schemaMode={snapshot.schemaMode} />

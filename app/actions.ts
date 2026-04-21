@@ -4,29 +4,44 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import type { ActionState } from "@/lib/action-state";
+import { requireAuthenticatedUser } from "@/lib/auth";
 import { splitAmount } from "@/lib/finance";
 import { getGroupData } from "@/lib/supabase-data";
-import { createSupabaseWriteClient } from "@/lib/supabaseClient";
+import { createSupabaseUserClient } from "@/lib/supabaseClient";
 
 export async function createGroup(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const name = String(formData.get("name") ?? "").trim();
 
   if (!name) {
     return { status: "error", message: "Escribe un nombre para el grupo." };
   }
 
-  const supabase = createSupabaseWriteClient();
+  const supabase = createSupabaseUserClient(user.accessToken);
   const { data, error } = await supabase
     .from("groups")
-    .insert({ name })
+    .insert({ name, owner_user_id: user.id })
     .select("id")
     .single();
 
   if (error) {
     return { status: "error", message: explainWriteError(error.message, "grupo") };
+  }
+
+  const membership = await supabase.from("group_members").insert({
+    group_id: data.id,
+    user_id: user.id,
+    role: "owner",
+  });
+
+  if (membership.error) {
+    return {
+      status: "error",
+      message: explainWriteError(membership.error.message, "membresía del grupo"),
+    };
   }
 
   revalidatePath("/");
@@ -37,6 +52,7 @@ export async function createParticipant(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const groupId = String(formData.get("groupId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
 
@@ -47,7 +63,7 @@ export async function createParticipant(
     };
   }
 
-  const supabase = createSupabaseWriteClient();
+  const supabase = createSupabaseUserClient(user.accessToken);
   const { error } = await supabase.from("participants").insert({
     group_id: groupId,
     name,
@@ -67,6 +83,7 @@ export async function createExpense(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const groupId = String(formData.get("groupId") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();
   const amount = Number(formData.get("amount") ?? 0);
@@ -80,7 +97,7 @@ export async function createExpense(
     return { status: "error", message: "Introduce un concepto y un importe válido." };
   }
 
-  const supabase = createSupabaseWriteClient();
+  const supabase = createSupabaseUserClient(user.accessToken);
 
   if (!paidByParticipantId || splitWithParticipantIds.length === 0) {
     const { error } = await supabase.from("expenses").insert({
@@ -164,6 +181,7 @@ export async function deleteParticipant(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const groupId = String(formData.get("groupId") ?? "").trim();
   const participantId = String(formData.get("participantId") ?? "").trim();
 
@@ -180,19 +198,16 @@ export async function deleteParticipant(
     };
   }
 
-  const balance = snapshot.data.balances.find(
-    (entry) => entry.participantId === participantId,
-  );
+  const balance = snapshot.data.balances.find((entry) => entry.participantId === participantId);
 
   if (balance && !balance.canDelete) {
     return {
       status: "error",
-      message:
-        "No puedes borrar este participante mientras tenga saldo pendiente.",
+      message: "No puedes borrar este participante mientras tenga saldo pendiente.",
     };
   }
 
-  const supabase = createSupabaseWriteClient();
+  const supabase = createSupabaseUserClient(user.accessToken);
   const { error } = await supabase
     .from("participants")
     .update({ deleted_at: new Date().toISOString() })
@@ -203,6 +218,14 @@ export async function deleteParticipant(
       const fallback = await supabase.from("participants").delete().eq("id", participantId);
 
       if (fallback.error) {
+        if (fallback.error.message.includes("violates foreign key constraint")) {
+          return {
+            status: "error",
+            message:
+              "Este participante tiene historial asociado. Para ocultarlo sin perder movimientos, ejecuta la migración avanzada completa de Supabase.",
+          };
+        }
+
         return {
           status: "error",
           message: explainWriteError(fallback.error.message, "participante"),
@@ -221,13 +244,14 @@ export async function deleteParticipant(
   revalidatePath("/");
   revalidatePath(`/groups/${groupId}`);
 
-  return { status: "success", message: "Participante eliminado correctamente." };
+  return { status: "success", message: "Participante ocultado correctamente." };
 }
 
 export async function deleteGroup(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const groupId = String(formData.get("groupId") ?? "").trim();
 
   if (!groupId) {
@@ -246,62 +270,40 @@ export async function deleteGroup(
   if (!snapshot.data.canDeleteGroup) {
     return {
       status: "error",
-      message:
-        "Solo puedes borrar el grupo cuando no tenga deudas, gastos ni pagos registrados.",
+      message: "Solo puedes borrar el grupo cuando no tenga deudas pendientes.",
     };
   }
 
-  const supabase = createSupabaseWriteClient();
-  const paymentsDelete = await supabase.from("payments").delete().eq("group_id", groupId);
-  if (paymentsDelete.error && paymentsDelete.error.code !== "PGRST205") {
-    return {
-      status: "error",
-      message: explainWriteError(paymentsDelete.error.message, "grupo"),
-    };
-  }
-
-  const expenseIds = snapshot.data.expenses.map((expense) => expense.id);
-  if (expenseIds.length) {
-    const sharesDelete = await supabase.from("expense_shares").delete().in("expense_id", expenseIds);
-    if (sharesDelete.error && sharesDelete.error.code !== "PGRST205") {
-      return {
-        status: "error",
-        message: explainWriteError(sharesDelete.error.message, "grupo"),
-      };
-    }
-  }
-
-  const expensesDelete = await supabase.from("expenses").delete().eq("group_id", groupId);
-  if (expensesDelete.error) {
-    return {
-      status: "error",
-      message: explainWriteError(expensesDelete.error.message, "grupo"),
-    };
-  }
-
-  const participantsDelete = await supabase.from("participants").delete().eq("group_id", groupId);
-  if (participantsDelete.error) {
-    return {
-      status: "error",
-      message: explainWriteError(participantsDelete.error.message, "grupo"),
-    };
-  }
-
-  const { error } = await supabase.from("groups").delete().eq("id", groupId);
+  const supabase = createSupabaseUserClient(user.accessToken);
+  const { error } = await supabase
+    .from("groups")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", groupId);
 
   if (error) {
+    if (error.code === "42703") {
+      const fallback = await supabase.from("groups").delete().eq("id", groupId);
+
+      if (fallback.error) {
+        return { status: "error", message: explainWriteError(fallback.error.message, "grupo") };
+      }
+
+      revalidatePath("/");
+      redirect("/");
+    }
+
     return { status: "error", message: explainWriteError(error.message, "grupo") };
   }
 
   revalidatePath("/");
-
-  return { status: "success", message: "Grupo eliminado correctamente." };
+  redirect("/");
 }
 
 export async function markSettlementPaid(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
   const groupId = String(formData.get("groupId") ?? "").trim();
   const fromParticipantId = String(formData.get("fromParticipantId") ?? "").trim();
   const toParticipantId = String(formData.get("toParticipantId") ?? "").trim();
@@ -311,7 +313,7 @@ export async function markSettlementPaid(
     return { status: "error", message: "No se pudo registrar el pago de la liquidación." };
   }
 
-  const supabase = createSupabaseWriteClient();
+  const supabase = createSupabaseUserClient(user.accessToken);
   const { error } = await supabase.from("payments").insert({
     group_id: groupId,
     from_participant_id: fromParticipantId,
@@ -334,7 +336,7 @@ export async function markSettlementPaid(
 
 function explainWriteError(message: string, entity: string) {
   if (message.includes("row-level security policy")) {
-    return `Supabase está bloqueando la escritura del ${entity}. Aplica las políticas del archivo supabase/setup.sql o añade SUPABASE_SERVICE_ROLE_KEY en .env.local.`;
+    return `Supabase está bloqueando la escritura del ${entity}. Aplica las políticas del archivo supabase/setup.sql o añade la autenticación correctamente antes de volver a intentarlo.`;
   }
 
   if (message.includes("fetch failed")) {
@@ -346,7 +348,7 @@ function explainWriteError(message: string, entity: string) {
   }
 
   if (message.includes("deleted_at")) {
-    return "Falta la columna de borrado lógico en participantes. Ejecuta la migración avanzada de Supabase y vuelve a intentarlo.";
+    return "Falta la columna de borrado lógico. Ejecuta la migración avanzada de Supabase y vuelve a intentarlo.";
   }
 
   if (message.includes("violates foreign key constraint")) {

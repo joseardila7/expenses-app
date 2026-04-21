@@ -8,6 +8,7 @@ type BalanceSummaryProps = {
   settlements: Settlement[];
   incompleteExpenseCount: number;
   groupId: string;
+  paymentsEnabled: boolean;
 };
 
 export function BalanceSummary({
@@ -15,6 +16,7 @@ export function BalanceSummary({
   settlements,
   incompleteExpenseCount,
   groupId,
+  paymentsEnabled,
 }: BalanceSummaryProps) {
   return (
     <section className="panel accent-panel">
@@ -85,6 +87,7 @@ export function BalanceSummary({
                       amount: String(settlement.amount),
                     }}
                     successMessage="Pago registrado y balances actualizados."
+                    disabled={!paymentsEnabled}
                   />
                 </article>
               ))
@@ -101,7 +104,15 @@ export function BalanceSummary({
 
       {incompleteExpenseCount > 0 ? (
         <p className="notice-inline">
-          Hay {incompleteExpenseCount} gasto(s) antiguos sin pagador o reparto. No se usan en el cálculo.
+          Hay {incompleteExpenseCount} gasto(s) antiguos sin pagador o reparto. No se usan en el
+          cálculo.
+        </p>
+      ) : null}
+
+      {!paymentsEnabled && settlements.length > 0 ? (
+        <p className="notice-inline">
+          Falta la tabla de pagos. Puedes calcular saldos, pero para marcar liquidaciones como
+          pagadas necesitas ejecutar la migración avanzada completa.
         </p>
       ) : null}
     </section>

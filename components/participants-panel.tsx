@@ -42,16 +42,16 @@ export function ParticipantsPanel({
                   <p>
                     {balance
                       ? canDelete
-                        ? "Sin deudas ni movimientos pendientes."
-                        : "Tiene movimientos o balance asociado."
-                      : "Participante del grupo"}
+                        ? "Sin deudas pendientes."
+                        : "Tiene saldo o movimientos pendientes."
+                      : "Participante del grupo."}
                   </p>
                 </div>
 
                 <ConfirmAction
                   action={deleteParticipant}
                   title={`Eliminar a ${participant.name}`}
-                  description="Esta acción borrará el participante de forma permanente si no tiene movimientos o pagos asociados."
+                  description="Esta acción ocultará al participante si ya no tiene saldo pendiente."
                   confirmLabel="Eliminar participante"
                   triggerLabel="Borrar"
                   triggerVariant="ghost"

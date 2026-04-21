@@ -1,7 +1,6 @@
-import { cache } from "react";
-
+import { requireAuthenticatedUser } from "@/lib/auth";
 import { calculateBalances, round } from "@/lib/finance";
-import { createSupabaseReadClient } from "@/lib/supabaseClient";
+import { createSupabaseUserClient } from "@/lib/supabaseClient";
 import type {
   DashboardData,
   ExpenseRecord,
@@ -22,11 +21,11 @@ type QueryResult<T> = {
   error: string | null;
 };
 
-export const getDashboardData = cache(async (): Promise<QueryResult<DashboardData>> => {
+export async function getDashboardData(): Promise<QueryResult<DashboardData>> {
   try {
-    const supabase = createSupabaseReadClient();
+    await requireAuthenticatedUser();
     const [groupsResult, participantsResult, advancedData] = await Promise.all([
-      supabase.from("groups").select("id,name,created_at").order("created_at", { ascending: false }),
+      fetchGroups(),
       fetchParticipants(),
       fetchAdvancedData(),
     ]);
@@ -50,6 +49,7 @@ export const getDashboardData = cache(async (): Promise<QueryResult<DashboardDat
       advancedData.shares,
       advancedData.payments,
       advancedData.schemaMode,
+      advancedData.paymentsEnabled,
     );
 
     return {
@@ -70,13 +70,13 @@ export const getDashboardData = cache(async (): Promise<QueryResult<DashboardDat
   } catch (error) {
     return { data: null, error: toErrorMessage(error) };
   }
-});
+}
 
-export const getGroupData = cache(async (groupId: string): Promise<QueryResult<GroupSummary | null>> => {
+export async function getGroupData(groupId: string): Promise<QueryResult<GroupSummary | null>> {
   try {
-    const supabase = createSupabaseReadClient();
+    await requireAuthenticatedUser();
     const [groupResult, participantsResult, advancedData] = await Promise.all([
-      supabase.from("groups").select("id,name,created_at").eq("id", groupId).single(),
+      fetchGroup(groupId),
       fetchParticipants(groupId),
       fetchAdvancedData(groupId),
     ]);
@@ -103,16 +103,17 @@ export const getGroupData = cache(async (groupId: string): Promise<QueryResult<G
       advancedData.shares,
       advancedData.payments,
       advancedData.schemaMode,
+      advancedData.paymentsEnabled,
     )[0];
 
     return { data: group ?? null, error: null };
   } catch (error) {
     return { data: null, error: toErrorMessage(error) };
   }
-});
+}
 
 async function fetchAdvancedData(groupId?: string) {
-  const supabase = createSupabaseReadClient();
+  const supabase = await createScopedSupabaseClient();
 
   let advancedQuery = supabase
     .from("expenses")
@@ -135,6 +136,7 @@ async function fetchAdvancedData(groupId?: string) {
       expenses: [] as ExpenseRecord[],
       shares: [] as ExpenseShareRecord[],
       payments: [] as PaymentRecord[],
+      paymentsEnabled: false,
       error: explainSupabaseError(advancedExpenses.error.message),
     };
   }
@@ -156,10 +158,7 @@ async function fetchAdvancedData(groupId?: string) {
 
   const [sharesResult, paymentsResult] = await Promise.all([sharesQuery, paymentsQuery]);
 
-  if (
-    (sharesResult.error && isAdvancedSchemaMissing(sharesResult.error.code)) ||
-    (paymentsResult.error && isAdvancedSchemaMissing(paymentsResult.error.code))
-  ) {
+  if (sharesResult.error && isAdvancedSchemaMissing(sharesResult.error.code)) {
     return fetchLegacyData(groupId);
   }
 
@@ -169,16 +168,18 @@ async function fetchAdvancedData(groupId?: string) {
       expenses: [] as ExpenseRecord[],
       shares: [] as ExpenseShareRecord[],
       payments: [] as PaymentRecord[],
+      paymentsEnabled: false,
       error: explainSupabaseError(sharesResult.error.message),
     };
   }
 
-  if (paymentsResult.error) {
+  if (paymentsResult.error && !isAdvancedSchemaMissing(paymentsResult.error.code)) {
     return {
       schemaMode: "advanced" as SchemaMode,
       expenses: [] as ExpenseRecord[],
       shares: [] as ExpenseShareRecord[],
       payments: [] as PaymentRecord[],
+      paymentsEnabled: false,
       error: explainSupabaseError(paymentsResult.error.message),
     };
   }
@@ -187,13 +188,81 @@ async function fetchAdvancedData(groupId?: string) {
     schemaMode: "advanced" as SchemaMode,
     expenses: (advancedExpenses.data ?? []) as ExpenseRecord[],
     shares: (sharesResult.data ?? []) as ExpenseShareRecord[],
-    payments: (paymentsResult.data ?? []) as PaymentRecord[],
+    payments:
+      paymentsResult.error && isAdvancedSchemaMissing(paymentsResult.error.code)
+        ? ([] as PaymentRecord[])
+        : ((paymentsResult.data ?? []) as PaymentRecord[]),
+    paymentsEnabled: !paymentsResult.error,
     error: null,
   };
 }
 
+async function fetchGroups() {
+  const supabase = await createScopedSupabaseClient();
+  const advancedResult = await supabase
+    .from("groups")
+    .select("id,name,created_at,deleted_at")
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false });
+
+  if (advancedResult.error && isAdvancedSchemaMissing(advancedResult.error.code)) {
+    const legacyResult = await supabase
+      .from("groups")
+      .select("id,name,created_at")
+      .order("created_at", { ascending: false });
+
+    if (legacyResult.error) {
+      return legacyResult;
+    }
+
+    return {
+      ...legacyResult,
+      data: (legacyResult.data ?? []).map((group) => ({
+        ...group,
+        deleted_at: null,
+      })),
+    };
+  }
+
+  return advancedResult;
+}
+
+async function fetchGroup(groupId: string) {
+  const supabase = await createScopedSupabaseClient();
+  const advancedResult = await supabase
+    .from("groups")
+    .select("id,name,created_at,deleted_at")
+    .eq("id", groupId)
+    .is("deleted_at", null)
+    .single();
+
+  if (advancedResult.error && isAdvancedSchemaMissing(advancedResult.error.code)) {
+    const legacyResult = await supabase
+      .from("groups")
+      .select("id,name,created_at")
+      .eq("id", groupId)
+      .single();
+
+    if (legacyResult.error) {
+      return legacyResult;
+    }
+
+    return {
+      ...legacyResult,
+      data: legacyResult.data
+        ? {
+            ...legacyResult.data,
+            deleted_at: null,
+          }
+        : null,
+    };
+  }
+
+  return advancedResult;
+}
+
 async function fetchParticipants(groupId?: string) {
-  const supabase = createSupabaseReadClient();
+  const supabase = await createScopedSupabaseClient();
 
   let advancedQuery = supabase.from("participants").select("id,group_id,name,deleted_at");
   if (groupId) {
@@ -226,7 +295,7 @@ async function fetchParticipants(groupId?: string) {
 }
 
 async function fetchLegacyData(groupId?: string) {
-  const supabase = createSupabaseReadClient();
+  const supabase = await createScopedSupabaseClient();
   let legacyQuery = supabase
     .from("expenses")
     .select("id,group_id,description,amount,created_at")
@@ -244,6 +313,7 @@ async function fetchLegacyData(groupId?: string) {
       expenses: [] as ExpenseRecord[],
       shares: [] as ExpenseShareRecord[],
       payments: [] as PaymentRecord[],
+      paymentsEnabled: false,
       error: explainSupabaseError(legacyExpenses.error.message),
     };
   }
@@ -256,6 +326,7 @@ async function fetchLegacyData(groupId?: string) {
     })) as ExpenseRecord[],
     shares: [] as ExpenseShareRecord[],
     payments: [] as PaymentRecord[],
+    paymentsEnabled: false,
     error: null,
   };
 }
@@ -267,6 +338,7 @@ function buildGroupSummaries(
   shares: ExpenseShareRecord[],
   payments: PaymentRecord[],
   schemaMode: SchemaMode,
+  paymentsEnabled: boolean,
 ) {
   const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
   const sharesByExpenseId = new Map<string, ExpenseShareRecord[]>();
@@ -315,8 +387,8 @@ function buildGroupSummaries(
       settlements: balancesData.settlements,
       canDeleteGroup:
         balancesData.settlements.length === 0 &&
-        groupExpenses.length === 0 &&
-        groupPayments.length === 0,
+        expenseViews.every((expense) => expense.isComplete || schemaMode === "legacy"),
+      paymentsEnabled,
     };
   });
 }
@@ -381,4 +453,9 @@ function explainSupabaseError(message: string) {
   }
 
   return message;
+}
+
+async function createScopedSupabaseClient() {
+  const user = await requireAuthenticatedUser();
+  return createSupabaseUserClient(user.accessToken);
 }
