@@ -1,65 +1,189 @@
-import Image from "next/image";
+import { CreateGroupForm } from "@/components/forms";
+import { GroupCard } from "@/components/group-card";
+import { EmptyPanel } from "@/components/empty-panel";
+import { ErrorPanel } from "@/components/error-panel";
+import { UpgradeNotice } from "@/components/upgrade-notice";
+import { formatCurrency, formatShortDate } from "@/lib/format";
+import { getDashboardData } from "@/lib/supabase-data";
 
-export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+export const dynamic = "force-dynamic";
+
+export default async function Page() {
+  const result = await getDashboardData();
+
+  if (result.error) {
+    return (
+      <main className="shell">
+        <ErrorPanel
+          title="No se pudo leer Supabase"
+          description="La interfaz ya está conectada al backend, pero el proyecto no responde desde este entorno."
+          detail={result.error}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
       </main>
-    </div>
+    );
+  }
+
+  if (!result.data) {
+    return (
+      <main className="shell">
+        <EmptyPanel
+          title="Todavía no hay datos"
+          description="Cuando crees el primer grupo, aparecerá aquí con sus gastos y participantes."
+        />
+      </main>
+    );
+  }
+
+  const { groups, totals, schemaMode } = result.data;
+  const recentExpenses = groups.flatMap((group) => group.expenses).slice(0, 4);
+
+  return (
+    <main className="shell">
+      <header className="app-bar">
+        <div>
+          <p className="app-bar__kicker">Gastos App</p>
+          <strong>Control compartido, claro y elegante.</strong>
+        </div>
+        <span className="app-bar__status">
+          {schemaMode === "advanced" ? "Balances activados" : "Modo básico activo"}
+        </span>
+      </header>
+
+      {schemaMode === "legacy" ? <UpgradeNotice /> : null}
+
+      <section className="hero">
+        <div className="hero__copy">
+          <p className="eyebrow">Control de gastos compartidos</p>
+          <h1>La forma profesional de ordenar grupos, personas y gastos.</h1>
+          <p className="hero__lede">
+            Esta versión trabaja con tu backend real y está lista para crecer hacia una app completa de
+            gastos compartidos con balances y liquidaciones.
+          </p>
+
+          <div className="hero__chips">
+            <span>Panel en tiempo real</span>
+            <span>Alta rápida de grupos</span>
+            <span>Reparto de gastos</span>
+          </div>
+
+          <div className="hero__actions">
+            <a href="#nuevo-grupo" className="button button--primary">
+              Crear grupo
+            </a>
+            <a href="#grupos" className="button button--ghost">
+              Explorar panel
+            </a>
+          </div>
+        </div>
+
+        <div className="hero__spotlight">
+          <div className="spotlight-card">
+            <span className="spotlight-card__label">Resumen global</span>
+            <strong>{formatCurrency(totals.spent)}</strong>
+            <p>Movidos en {totals.groups} grupos activos</p>
+          </div>
+
+          <div className="spotlight-grid">
+            <div className="spotlight-mini">
+              <span>Participantes</span>
+              <strong>{totals.participants}</strong>
+            </div>
+            <div className="spotlight-mini">
+              <span>Último gasto</span>
+              <strong>{recentExpenses[0] ? formatShortDate(recentExpenses[0].createdAt) : "--"}</strong>
+            </div>
+          </div>
+
+          <div className="spotlight-note">
+            <p>
+              Un espacio pensado para ver el estado del grupo de un vistazo, sin perder legibilidad ni ritmo visual.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="stats-strip">
+        <article>
+          <span>Total registrado</span>
+          <strong>{formatCurrency(totals.spent)}</strong>
+        </article>
+        <article>
+          <span>Participantes activos</span>
+          <strong>{totals.participants}</strong>
+        </article>
+        <article>
+          <span>Gastos guardados</span>
+          <strong>{totals.expenses}</strong>
+        </article>
+      </section>
+
+      <section className="dashboard-grid" id="grupos">
+        <div className="panel">
+          <div className="panel__header">
+            <div>
+              <p className="eyebrow">Tus grupos</p>
+              <h2>Panorama rápido</h2>
+              <p className="panel__subcopy">
+                Accede al detalle de cada grupo y mantén el contexto financiero bien ordenado.
+              </p>
+            </div>
+          </div>
+
+          {groups.length ? (
+            <div className="group-grid">
+              {groups.map((group) => (
+                <GroupCard key={group.group.id} summary={group} />
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">Aún no hay grupos guardados.</p>
+          )}
+        </div>
+
+        <aside className="panel accent-panel panel--form">
+          <div className="panel__header">
+            <div>
+              <p className="eyebrow">Nuevo grupo</p>
+              <h2>Crea desde aquí</h2>
+              <p className="panel__subcopy">
+                Empieza con un nombre claro y después añade personas y gastos dentro del grupo.
+              </p>
+            </div>
+          </div>
+
+          <div id="nuevo-grupo">
+            <CreateGroupForm />
+          </div>
+        </aside>
+      </section>
+
+      <section className="panel section-space">
+        <div className="panel__header">
+          <div>
+            <p className="eyebrow">Actividad reciente</p>
+            <h2>Últimos gastos registrados</h2>
+            <p className="panel__subcopy">
+              Los movimientos más recientes quedan visibles para que el seguimiento diario sea inmediato.
+            </p>
+          </div>
+        </div>
+
+        {recentExpenses.length ? (
+          <div className="recent-list">
+            {recentExpenses.map((expense) => (
+              <article key={expense.id} className="recent-row">
+                <div>
+                  <h3>{expense.description}</h3>
+                  <p>{formatShortDate(expense.createdAt)}</p>
+                </div>
+                <strong>{formatCurrency(Number(expense.amount))}</strong>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-state">Cuando registres gastos, aparecerán aquí.</p>
+        )}
+      </section>
+    </main>
   );
 }
