@@ -11,6 +11,8 @@ export type ParticipantRecord = {
   id: string;
   group_id: string;
   name: string;
+  user_id: string | null;
+  contact_email: string | null;
   deleted_at: string | null;
 };
 
@@ -36,6 +38,67 @@ export type PaymentRecord = {
   to_participant_id: string;
   amount: number;
   created_at: string;
+};
+
+export type GroupInvitationRecord = {
+  id: string;
+  group_id: string;
+  group_name_snapshot: string;
+  invited_email: string;
+  invited_by_user_id: string;
+  invited_by_name_snapshot: string | null;
+  token: string;
+  status: "pending" | "accepted" | "revoked";
+  created_at: string;
+  accepted_at: string | null;
+  accepted_user_id: string | null;
+  accepted_name_snapshot: string | null;
+  revoked_at: string | null;
+};
+
+export type GroupInvitationView = {
+  id: string;
+  groupId: string;
+  groupNameSnapshot: string;
+  invitedEmail: string;
+  invitedByUserId: string;
+  invitedByNameSnapshot: string | null;
+  token: string;
+  status: "pending" | "accepted" | "revoked";
+  createdAt: string;
+  acceptedAt: string | null;
+  acceptedUserId: string | null;
+  acceptedNameSnapshot: string | null;
+  revokedAt: string | null;
+  invitePath: string;
+};
+
+export type PendingInvitationView = {
+  id: string;
+  token: string;
+  invitePath: string;
+  invitedEmail: string;
+  createdAt: string;
+  status: "pending" | "accepted" | "revoked";
+  groupId: string;
+  groupName: string;
+  invitedByName: string | null;
+};
+
+export type InvitationTokenView = {
+  id: string;
+  token: string;
+  invitePath: string;
+  status: "pending" | "accepted" | "revoked";
+  invitedEmail: string;
+  invitedByUserId: string;
+  createdAt: string;
+  acceptedAt: string | null;
+  acceptedUserId: string | null;
+  revokedAt: string | null;
+  groupId: string;
+  groupName: string;
+  invitedByName: string | null;
 };
 
 export type ExpenseView = {
@@ -85,6 +148,7 @@ export type Settlement = {
 export type GroupSummary = {
   group: GroupRecord;
   participants: ParticipantRecord[];
+  invitations: GroupInvitationView[];
   expenses: ExpenseView[];
   payments: PaymentView[];
   totalSpent: number;
@@ -101,6 +165,7 @@ export type GroupSummary = {
 
 export type DashboardData = {
   groups: GroupSummary[];
+  pendingInvitations: PendingInvitationView[];
   schemaMode: SchemaMode;
   totals: {
     groups: number;

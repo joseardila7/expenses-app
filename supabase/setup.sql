@@ -1,10 +1,19 @@
 alter table public.profiles enable row level security;
 alter table public.groups enable row level security;
 alter table public.group_members enable row level security;
+alter table public.group_invitations enable row level security;
 alter table public.participants enable row level security;
 alter table public.expenses enable row level security;
 alter table public.expense_shares enable row level security;
 alter table public.payments enable row level security;
+alter table public.profiles force row level security;
+alter table public.groups force row level security;
+alter table public.group_members force row level security;
+alter table public.group_invitations force row level security;
+alter table public.participants force row level security;
+alter table public.expenses force row level security;
+alter table public.expense_shares force row level security;
+alter table public.payments force row level security;
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -63,38 +72,85 @@ as $$
   );
 $$;
 
-drop policy if exists "users read own profile" on public.profiles;
-drop policy if exists "users insert own profile" on public.profiles;
-drop policy if exists "users update own profile" on public.profiles;
+create or replace function public.is_group_admin(target_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.groups
+    where id = target_group_id
+      and owner_user_id = auth.uid()
+  )
+  or exists (
+    select 1
+    from public.group_members
+    where group_id = target_group_id
+      and user_id = auth.uid()
+      and role = 'owner'
+  );
+$$;
 
-drop policy if exists "members read groups" on public.groups;
-drop policy if exists "owners insert groups" on public.groups;
-drop policy if exists "owners update groups" on public.groups;
-drop policy if exists "owners delete groups" on public.groups;
+create or replace function public.invitation_matches_user(target_email text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select lower(coalesce(auth.jwt() ->> 'email', '')) = lower(target_email);
+$$;
 
-drop policy if exists "members read group members" on public.group_members;
-drop policy if exists "owners insert group members" on public.group_members;
-drop policy if exists "owners update group members" on public.group_members;
-drop policy if exists "owners delete group members" on public.group_members;
+create or replace function public.can_join_group_via_invitation(target_group_id uuid, target_user_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    target_user_id = auth.uid()
+    and exists (
+      select 1
+      from public.group_invitations
+      where group_id = target_group_id
+        and status = 'pending'
+        and lower(invited_email) = lower(coalesce(auth.jwt() ->> 'email', ''))
+        and invited_by_user_id <> auth.uid()
+    );
+$$;
 
-drop policy if exists "members read participants" on public.participants;
-drop policy if exists "members insert participants" on public.participants;
-drop policy if exists "members update participants" on public.participants;
-drop policy if exists "members delete participants" on public.participants;
-
-drop policy if exists "members read expenses" on public.expenses;
-drop policy if exists "members insert expenses" on public.expenses;
-drop policy if exists "members update expenses" on public.expenses;
-drop policy if exists "members delete expenses" on public.expenses;
-
-drop policy if exists "members read expense shares" on public.expense_shares;
-drop policy if exists "members insert expense shares" on public.expense_shares;
-drop policy if exists "members delete expense shares" on public.expense_shares;
-
-drop policy if exists "members read payments" on public.payments;
-drop policy if exists "members insert payments" on public.payments;
-drop policy if exists "members update payments" on public.payments;
-drop policy if exists "members delete payments" on public.payments;
+do $$
+declare
+  policy_record record;
+begin
+  for policy_record in
+    select schemaname, tablename, policyname
+    from pg_policies
+    where schemaname = 'public'
+      and tablename in (
+        'profiles',
+        'groups',
+        'group_members',
+        'group_invitations',
+        'participants',
+        'expenses',
+        'expense_shares',
+        'payments'
+      )
+  loop
+    execute format(
+      'drop policy if exists %I on %I.%I',
+      policy_record.policyname,
+      policy_record.schemaname,
+      policy_record.tablename
+    );
+  end loop;
+end
+$$;
 
 create policy "users read own profile"
 on public.profiles
@@ -156,20 +212,63 @@ create policy "owners insert group members"
 on public.group_members
 for insert
 to authenticated
-with check (public.is_group_owner(group_id));
+with check (
+  public.is_group_admin(group_id)
+  or (
+    user_id = auth.uid()
+    and public.can_join_group_via_invitation(group_id, user_id)
+  )
+);
 
 create policy "owners update group members"
 on public.group_members
 for update
 to authenticated
-using (public.is_group_owner(group_id))
-with check (public.is_group_owner(group_id));
+using (public.is_group_admin(group_id))
+with check (public.is_group_admin(group_id));
 
 create policy "owners delete group members"
 on public.group_members
 for delete
 to authenticated
-using (public.is_group_owner(group_id));
+using (public.is_group_admin(group_id));
+
+create policy "owners and invitees read invitations"
+on public.group_invitations
+for select
+to authenticated
+using (
+  public.is_group_admin(group_id)
+  or public.invitation_matches_user(invited_email)
+);
+
+create policy "owners insert invitations"
+on public.group_invitations
+for insert
+to authenticated
+with check (
+  public.is_group_admin(group_id)
+  and invited_by_user_id = auth.uid()
+);
+
+create policy "owners and invitees update invitations"
+on public.group_invitations
+for update
+to authenticated
+using (
+  public.is_group_admin(group_id)
+  or public.invitation_matches_user(invited_email)
+)
+with check (
+  public.is_group_admin(group_id)
+  or public.invitation_matches_user(invited_email)
+);
+
+create policy "owners delete invitations"
+on public.group_invitations
+for delete
+to authenticated
+using (public.is_group_admin(group_id));
 
 create policy "members read participants"
 on public.participants

@@ -6,8 +6,12 @@ import type {
   ExpenseRecord,
   ExpenseShareRecord,
   ExpenseView,
+  GroupInvitationRecord,
+  GroupInvitationView,
   GroupRecord,
   GroupSummary,
+  InvitationTokenView,
+  PendingInvitationView,
   ParticipantRecord,
   PaymentRecord,
   PaymentView,
@@ -23,16 +27,20 @@ type QueryResult<T> = {
 
 export async function getDashboardData(): Promise<QueryResult<DashboardData>> {
   try {
-    await requireAuthenticatedUser();
-    const [groupsResult, participantsResult, advancedData] = await Promise.all([
-      fetchGroups(),
-      fetchParticipants(),
-      fetchAdvancedData(),
-    ]);
+    const user = await requireAuthenticatedUser();
+    const accessibleGroupIds = await fetchAccessibleGroupIds(user.id);
+    const groupsResult = await fetchGroups(accessibleGroupIds);
 
     if (groupsResult.error) {
       return { data: null, error: explainSupabaseError(groupsResult.error.message) };
     }
+
+    const visibleGroupIds = (groupsResult.data ?? []).map((group) => group.id);
+    const [participantsResult, advancedData, pendingInvitations] = await Promise.all([
+      fetchParticipants(visibleGroupIds),
+      fetchAdvancedData(visibleGroupIds),
+      fetchPendingInvitations(user.email),
+    ]);
 
     if (participantsResult.error) {
       return { data: null, error: explainSupabaseError(participantsResult.error.message) };
@@ -45,6 +53,7 @@ export async function getDashboardData(): Promise<QueryResult<DashboardData>> {
     const groups = buildGroupSummaries(
       groupsResult.data ?? [],
       participantsResult.data ?? [],
+      [],
       advancedData.expenses,
       advancedData.shares,
       advancedData.payments,
@@ -55,6 +64,7 @@ export async function getDashboardData(): Promise<QueryResult<DashboardData>> {
     return {
       data: {
         groups,
+        pendingInvitations,
         schemaMode: advancedData.schemaMode,
         totals: {
           groups: groups.length,
@@ -74,11 +84,18 @@ export async function getDashboardData(): Promise<QueryResult<DashboardData>> {
 
 export async function getGroupData(groupId: string): Promise<QueryResult<GroupSummary | null>> {
   try {
-    await requireAuthenticatedUser();
-    const [groupResult, participantsResult, advancedData] = await Promise.all([
+    const user = await requireAuthenticatedUser();
+    const accessibleGroupIds = await fetchAccessibleGroupIds(user.id);
+
+    if (!accessibleGroupIds.includes(groupId)) {
+      return { data: null, error: null };
+    }
+
+    const [groupResult, participantsResult, advancedData, invitations] = await Promise.all([
       fetchGroup(groupId),
-      fetchParticipants(groupId),
-      fetchAdvancedData(groupId),
+      fetchParticipants([groupId]),
+      fetchAdvancedData([groupId]),
+      fetchGroupInvitations(groupId),
     ]);
 
     if (groupResult.error) {
@@ -99,6 +116,7 @@ export async function getGroupData(groupId: string): Promise<QueryResult<GroupSu
     const group = buildGroupSummaries(
       [groupResult.data as GroupRecord],
       participantsResult.data ?? [],
+      invitations,
       advancedData.expenses,
       advancedData.shares,
       advancedData.payments,
@@ -112,22 +130,71 @@ export async function getGroupData(groupId: string): Promise<QueryResult<GroupSu
   }
 }
 
-async function fetchAdvancedData(groupId?: string) {
-  const supabase = await createScopedSupabaseClient();
+export async function getInvitationByToken(token: string): Promise<QueryResult<InvitationTokenView | null>> {
+  try {
+    await requireAuthenticatedUser();
+    const supabase = await createScopedSupabaseClient();
+    const { data, error } = await supabase
+      .from("group_invitations")
+      .select("id,group_id,group_name_snapshot,invited_email,invited_by_user_id,invited_by_name_snapshot,token,status,created_at,accepted_at,accepted_user_id,accepted_name_snapshot,revoked_at")
+      .eq("token", token)
+      .maybeSingle();
 
-  let advancedQuery = supabase
-    .from("expenses")
-    .select("id,group_id,description,amount,created_at,paid_by_participant_id")
-    .order("created_at", { ascending: false });
+    if (error) {
+      return { data: null, error: explainSupabaseError(error.message) };
+    }
 
-  if (groupId) {
-    advancedQuery = advancedQuery.eq("group_id", groupId);
+    if (!data) {
+      return { data: null, error: null };
+    }
+
+    const invitation = data as GroupInvitationRecord;
+
+    return {
+      data: {
+        id: invitation.id,
+        token: invitation.token,
+        invitePath: `/invitations/${invitation.token}`,
+        status: invitation.status,
+        invitedEmail: invitation.invited_email,
+        invitedByUserId: invitation.invited_by_user_id,
+        createdAt: invitation.created_at,
+        acceptedAt: invitation.accepted_at,
+        acceptedUserId: invitation.accepted_user_id,
+        revokedAt: invitation.revoked_at,
+        groupId: invitation.group_id,
+        groupName: invitation.group_name_snapshot,
+        invitedByName: invitation.invited_by_name_snapshot,
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: toErrorMessage(error) };
+  }
+}
+
+async function fetchAdvancedData(groupIds: string[]) {
+  if (groupIds.length === 0) {
+    return {
+      schemaMode: "advanced" as SchemaMode,
+      expenses: [] as ExpenseRecord[],
+      shares: [] as ExpenseShareRecord[],
+      payments: [] as PaymentRecord[],
+      paymentsEnabled: true,
+      error: null,
+    };
   }
 
-  const advancedExpenses = await advancedQuery;
+  const supabase = await createScopedSupabaseClient();
+
+  const advancedExpenses = await supabase
+    .from("expenses")
+    .select("id,group_id,description,amount,created_at,paid_by_participant_id")
+    .in("group_id", groupIds)
+    .order("created_at", { ascending: false });
 
   if (advancedExpenses.error && isAdvancedSchemaMissing(advancedExpenses.error.code)) {
-    return fetchLegacyData(groupId);
+    return fetchLegacyData(groupIds);
   }
 
   if (advancedExpenses.error) {
@@ -148,18 +215,16 @@ async function fetchAdvancedData(groupId?: string) {
     sharesQuery = sharesQuery.in("expense_id", expenseIds);
   }
 
-  let paymentsQuery = supabase
+  const paymentsQuery = supabase
     .from("payments")
     .select("id,group_id,from_participant_id,to_participant_id,amount,created_at")
+    .in("group_id", groupIds)
     .order("created_at", { ascending: false });
-  if (groupId) {
-    paymentsQuery = paymentsQuery.eq("group_id", groupId);
-  }
 
   const [sharesResult, paymentsResult] = await Promise.all([sharesQuery, paymentsQuery]);
 
   if (sharesResult.error && isAdvancedSchemaMissing(sharesResult.error.code)) {
-    return fetchLegacyData(groupId);
+    return fetchLegacyData(groupIds);
   }
 
   if (sharesResult.error) {
@@ -197,11 +262,16 @@ async function fetchAdvancedData(groupId?: string) {
   };
 }
 
-async function fetchGroups() {
+async function fetchGroups(groupIds: string[]) {
+  if (groupIds.length === 0) {
+    return { data: [] as GroupRecord[], error: null };
+  }
+
   const supabase = await createScopedSupabaseClient();
   const advancedResult = await supabase
     .from("groups")
     .select("id,name,created_at,deleted_at")
+    .in("id", groupIds)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
@@ -209,6 +279,7 @@ async function fetchGroups() {
     const legacyResult = await supabase
       .from("groups")
       .select("id,name,created_at")
+      .in("id", groupIds)
       .order("created_at", { ascending: false });
 
     if (legacyResult.error) {
@@ -261,23 +332,22 @@ async function fetchGroup(groupId: string) {
   return advancedResult;
 }
 
-async function fetchParticipants(groupId?: string) {
-  const supabase = await createScopedSupabaseClient();
-
-  let advancedQuery = supabase.from("participants").select("id,group_id,name,deleted_at");
-  if (groupId) {
-    advancedQuery = advancedQuery.eq("group_id", groupId);
+async function fetchParticipants(groupIds: string[]) {
+  if (groupIds.length === 0) {
+    return { data: [] as ParticipantRecord[], error: null };
   }
 
-  const advancedResult = await advancedQuery;
+  const supabase = await createScopedSupabaseClient();
+  const advancedResult = await supabase
+    .from("participants")
+    .select("id,group_id,name,user_id,contact_email,deleted_at")
+    .in("group_id", groupIds);
 
   if (advancedResult.error && isAdvancedSchemaMissing(advancedResult.error.code)) {
-    let legacyQuery = supabase.from("participants").select("id,group_id,name");
-    if (groupId) {
-      legacyQuery = legacyQuery.eq("group_id", groupId);
-    }
-
-    const legacyResult = await legacyQuery;
+    const legacyResult = await supabase
+      .from("participants")
+      .select("id,group_id,name")
+      .in("group_id", groupIds);
     if (legacyResult.error) {
       return legacyResult;
     }
@@ -286,6 +356,8 @@ async function fetchParticipants(groupId?: string) {
       ...legacyResult,
       data: (legacyResult.data ?? []).map((participant) => ({
         ...participant,
+        user_id: null,
+        contact_email: null,
         deleted_at: null,
       })),
     };
@@ -294,18 +366,24 @@ async function fetchParticipants(groupId?: string) {
   return advancedResult;
 }
 
-async function fetchLegacyData(groupId?: string) {
-  const supabase = await createScopedSupabaseClient();
-  let legacyQuery = supabase
-    .from("expenses")
-    .select("id,group_id,description,amount,created_at")
-    .order("created_at", { ascending: false });
-
-  if (groupId) {
-    legacyQuery = legacyQuery.eq("group_id", groupId);
+async function fetchLegacyData(groupIds: string[]) {
+  if (groupIds.length === 0) {
+    return {
+      schemaMode: "legacy" as SchemaMode,
+      expenses: [] as ExpenseRecord[],
+      shares: [] as ExpenseShareRecord[],
+      payments: [] as PaymentRecord[],
+      paymentsEnabled: false,
+      error: null,
+    };
   }
 
-  const legacyExpenses = await legacyQuery;
+  const supabase = await createScopedSupabaseClient();
+  const legacyExpenses = await supabase
+    .from("expenses")
+    .select("id,group_id,description,amount,created_at")
+    .in("group_id", groupIds)
+    .order("created_at", { ascending: false });
 
   if (legacyExpenses.error) {
     return {
@@ -334,6 +412,7 @@ async function fetchLegacyData(groupId?: string) {
 function buildGroupSummaries(
   groups: GroupRecord[],
   participants: ParticipantRecord[],
+  invitations: GroupInvitationView[],
   expenses: ExpenseRecord[],
   shares: ExpenseShareRecord[],
   payments: PaymentRecord[],
@@ -353,6 +432,7 @@ function buildGroupSummaries(
     const groupParticipants = participants.filter(
       (participant) => participant.group_id === group.id && !participant.deleted_at,
     );
+    const groupInvitations = invitations.filter((invitation) => invitation.groupId === group.id);
     const groupExpenses = expenses.filter((expense) => expense.group_id === group.id);
     const groupPayments = payments.filter((payment) => payment.group_id === group.id);
     const expenseViews = groupExpenses.map((expense) =>
@@ -375,6 +455,7 @@ function buildGroupSummaries(
     return {
       group,
       participants: groupParticipants,
+      invitations: groupInvitations,
       expenses: expenseViews,
       payments: groupPayments.map((payment) => toPaymentView(payment, participantsById)),
       totalSpent,
@@ -458,4 +539,87 @@ function explainSupabaseError(message: string) {
 async function createScopedSupabaseClient() {
   const user = await requireAuthenticatedUser();
   return createSupabaseUserClient(user.accessToken);
+}
+
+async function fetchAccessibleGroupIds(userId: string): Promise<string[]> {
+  const supabase = await createScopedSupabaseClient();
+  const [ownedGroupsResult, membershipsResult] = await Promise.all([
+    supabase.from("groups").select("id").eq("owner_user_id", userId).is("deleted_at", null),
+    supabase.from("group_members").select("group_id").eq("user_id", userId),
+  ]);
+
+  const accessibleGroupIds = new Set<string>();
+
+  for (const group of ownedGroupsResult.data ?? []) {
+    accessibleGroupIds.add(group.id);
+  }
+
+  for (const membership of membershipsResult.data ?? []) {
+    accessibleGroupIds.add(membership.group_id);
+  }
+
+  return [...accessibleGroupIds];
+}
+
+async function fetchGroupInvitations(groupId: string): Promise<GroupInvitationView[]> {
+  const supabase = await createScopedSupabaseClient();
+  const { data, error } = await supabase
+    .from("group_invitations")
+    .select("id,group_id,group_name_snapshot,invited_email,invited_by_user_id,invited_by_name_snapshot,token,status,created_at,accepted_at,accepted_user_id,accepted_name_snapshot,revoked_at")
+    .eq("group_id", groupId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    return [];
+  }
+
+  return ((data ?? []) as GroupInvitationRecord[]).map(toGroupInvitationView);
+}
+
+async function fetchPendingInvitations(email: string): Promise<PendingInvitationView[]> {
+  const supabase = await createScopedSupabaseClient();
+  const normalizedEmail = email.trim().toLowerCase();
+  const { data, error } = await supabase
+    .from("group_invitations")
+    .select("id,group_id,group_name_snapshot,invited_email,invited_by_user_id,invited_by_name_snapshot,token,status,created_at,accepted_at,accepted_user_id,accepted_name_snapshot,revoked_at")
+    .eq("status", "pending")
+    .eq("invited_email", normalizedEmail)
+    .order("created_at", { ascending: false });
+
+  if (error || !(data ?? []).length) {
+    return [];
+  }
+
+  const invitations = (data ?? []) as GroupInvitationRecord[];
+
+  return invitations.map((invitation) => ({
+    id: invitation.id,
+    token: invitation.token,
+    invitePath: `/invitations/${invitation.token}`,
+    invitedEmail: invitation.invited_email,
+    createdAt: invitation.created_at,
+    status: invitation.status,
+    groupId: invitation.group_id,
+    groupName: invitation.group_name_snapshot,
+    invitedByName: invitation.invited_by_name_snapshot,
+  }));
+}
+
+function toGroupInvitationView(invitation: GroupInvitationRecord): GroupInvitationView {
+  return {
+    id: invitation.id,
+    groupId: invitation.group_id,
+    groupNameSnapshot: invitation.group_name_snapshot,
+    invitedEmail: invitation.invited_email,
+    invitedByUserId: invitation.invited_by_user_id,
+    invitedByNameSnapshot: invitation.invited_by_name_snapshot,
+    token: invitation.token,
+    status: invitation.status,
+    createdAt: invitation.created_at,
+    acceptedAt: invitation.accepted_at,
+    acceptedUserId: invitation.accepted_user_id,
+    acceptedNameSnapshot: invitation.accepted_name_snapshot,
+    revokedAt: invitation.revoked_at,
+    invitePath: `/invitations/${invitation.token}`,
+  };
 }

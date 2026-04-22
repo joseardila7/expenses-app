@@ -1,13 +1,17 @@
 "use server";
 
+import { randomUUID } from "crypto";
+
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import type { ActionState } from "@/lib/action-state";
-import { requireAuthenticatedUser } from "@/lib/auth";
+import { requireAuthenticatedProfile, requireAuthenticatedUser } from "@/lib/auth";
 import { splitAmount } from "@/lib/finance";
 import { getGroupData } from "@/lib/supabase-data";
 import { createSupabaseUserClient } from "@/lib/supabaseClient";
+
+type AppSupabaseClient = ReturnType<typeof createSupabaseUserClient>;
 
 export async function createGroup(
   _previousState: ActionState,
@@ -46,6 +50,162 @@ export async function createGroup(
 
   revalidatePath("/");
   redirect(`/groups/${data.id}`);
+}
+
+export async function createGroupInvitation(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const user = await requireAuthenticatedProfile();
+  const groupId = String(formData.get("groupId") ?? "").trim();
+  const invitedEmail = String(formData.get("invitedEmail") ?? "").trim().toLowerCase();
+
+  if (!groupId || !invitedEmail) {
+    return { status: "error", message: "Escribe un correo válido para invitar." };
+  }
+
+  if (invitedEmail === user.email.toLowerCase()) {
+    return { status: "error", message: "No puedes invitarte a ti mismo al grupo." };
+  }
+
+  const snapshot = await getGroupData(groupId);
+
+  if (snapshot.error || !snapshot.data) {
+    return { status: "error", message: "No se pudo preparar la invitación del grupo." };
+  }
+
+  const supabase = createSupabaseUserClient(user.accessToken);
+  const token = randomUUID();
+  const { error } = await supabase.from("group_invitations").insert({
+    group_id: groupId,
+    group_name_snapshot: snapshot.data.group.name,
+    invited_email: invitedEmail,
+    invited_by_user_id: user.id,
+    invited_by_name_snapshot: user.displayName,
+    token,
+  });
+
+  if (error) {
+    if (error.message.includes("group_invitations_pending_unique_idx")) {
+      return {
+        status: "error",
+        message: "Ya existe una invitación pendiente para ese correo en este grupo.",
+      };
+    }
+
+    return { status: "error", message: explainWriteError(error.message, "invitación") };
+  }
+
+  revalidatePath("/");
+  revalidatePath(`/groups/${groupId}`);
+
+  return { status: "success", message: `Invitación creada para ${invitedEmail}.` };
+}
+
+export async function revokeGroupInvitation(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const user = await requireAuthenticatedUser();
+  const invitationId = String(formData.get("invitationId") ?? "").trim();
+  const groupId = String(formData.get("groupId") ?? "").trim();
+
+  if (!invitationId || !groupId) {
+    return { status: "error", message: "No se pudo identificar la invitación." };
+  }
+
+  const supabase = createSupabaseUserClient(user.accessToken);
+  const { error } = await supabase
+    .from("group_invitations")
+    .update({
+      status: "revoked",
+      revoked_at: new Date().toISOString(),
+    })
+    .eq("id", invitationId)
+    .eq("status", "pending");
+
+  if (error) {
+    return { status: "error", message: explainWriteError(error.message, "invitación") };
+  }
+
+  revalidatePath("/");
+  revalidatePath(`/groups/${groupId}`);
+
+  return { status: "success", message: "Invitación revocada." };
+}
+
+export async function acceptGroupInvitation(formData: FormData) {
+  const user = await requireAuthenticatedProfile();
+  const token = String(formData.get("token") ?? "").trim();
+  const participantName = String(formData.get("participantName") ?? "").trim();
+
+  if (!token) {
+    redirect("/");
+  }
+
+  if (!participantName) {
+    redirect(`/invitations/${token}`);
+  }
+
+  const supabase = createSupabaseUserClient(user.accessToken);
+  const invitationResult = await supabase
+    .from("group_invitations")
+    .select("id,group_id,invited_email,invited_by_user_id,status")
+    .eq("token", token)
+    .maybeSingle();
+
+  if (invitationResult.error || !invitationResult.data) {
+    redirect("/");
+  }
+
+  const invitation = invitationResult.data;
+
+  if (
+    invitation.status !== "pending" ||
+    invitation.invited_email !== user.email.toLowerCase() ||
+    invitation.invited_by_user_id === user.id
+  ) {
+    redirect(`/invitations/${token}`);
+  }
+
+  const membership = await supabase.from("group_members").upsert(
+    {
+      group_id: invitation.group_id,
+      user_id: user.id,
+      role: "member",
+    },
+    { onConflict: "group_id,user_id", ignoreDuplicates: false },
+  );
+
+  if (membership.error) {
+    redirect(`/invitations/${token}`);
+  }
+
+  const participantSynced = await syncAcceptedInvitationParticipant({
+    supabase,
+    groupId: invitation.group_id,
+    userId: user.id,
+    email: user.email,
+    participantName,
+  });
+
+  if (!participantSynced) {
+    redirect(`/invitations/${token}`);
+  }
+
+  await supabase
+    .from("group_invitations")
+    .update({
+      status: "accepted",
+      accepted_at: new Date().toISOString(),
+      accepted_user_id: user.id,
+      accepted_name_snapshot: participantName,
+    })
+    .eq("id", invitation.id);
+
+  revalidatePath("/");
+  revalidatePath(`/groups/${invitation.group_id}`);
+  redirect(`/groups/${invitation.group_id}`);
 }
 
 export async function createParticipant(
@@ -332,6 +492,76 @@ export async function markSettlementPaid(
   revalidatePath(`/groups/${groupId}`);
 
   return { status: "success", message: "Liquidación marcada como pagada." };
+}
+
+async function syncAcceptedInvitationParticipant({
+  supabase,
+  groupId,
+  userId,
+  email,
+  participantName,
+}: {
+  supabase: AppSupabaseClient;
+  groupId: string;
+  userId: string;
+  email: string;
+  participantName: string;
+}) {
+  const linkedParticipant = await supabase
+    .from("participants")
+    .select("id")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (linkedParticipant.error) {
+    return false;
+  }
+
+  if (linkedParticipant.data) {
+    const updateResult = await supabase
+      .from("participants")
+      .update({
+        name: participantName,
+        contact_email: email.toLowerCase(),
+      })
+      .eq("id", linkedParticipant.data.id);
+
+    return !updateResult.error;
+  }
+
+  const matchingNamedParticipant = await supabase
+    .from("participants")
+    .select("id")
+    .eq("group_id", groupId)
+    .is("user_id", null)
+    .eq("name", participantName)
+    .maybeSingle();
+
+  if (matchingNamedParticipant.error) {
+    return false;
+  }
+
+  if (matchingNamedParticipant.data) {
+    const claimResult = await supabase
+      .from("participants")
+      .update({
+        user_id: userId,
+        contact_email: email.toLowerCase(),
+      })
+      .eq("id", matchingNamedParticipant.data.id);
+
+    return !claimResult.error;
+  }
+
+  const insertResult = await supabase.from("participants").insert({
+    group_id: groupId,
+    name: participantName,
+    user_id: userId,
+    contact_email: email.toLowerCase(),
+  });
+
+  return !insertResult.error;
 }
 
 function explainWriteError(message: string, entity: string) {

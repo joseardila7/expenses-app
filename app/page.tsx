@@ -2,6 +2,7 @@ import { CreateGroupForm } from "@/components/forms";
 import { GroupCard } from "@/components/group-card";
 import { EmptyPanel } from "@/components/empty-panel";
 import { ErrorPanel } from "@/components/error-panel";
+import { PendingInvitationsPanel } from "@/components/pending-invitations-panel";
 import { UpgradeNotice } from "@/components/upgrade-notice";
 import { UserSession } from "@/components/user-session";
 import { requireAuthenticatedProfile } from "@/lib/auth";
@@ -37,7 +38,7 @@ export default async function Page() {
     );
   }
 
-  const { groups, totals, schemaMode } = result.data;
+  const { groups, pendingInvitations, totals, schemaMode } = result.data;
   const recentExpenses = groups.flatMap((group) => group.expenses).slice(0, 4);
 
   return (
@@ -56,6 +57,7 @@ export default async function Page() {
       </header>
 
       {schemaMode === "legacy" ? <UpgradeNotice /> : null}
+      <PendingInvitationsPanel invitations={pendingInvitations} />
 
       <section className="hero">
         <div className="hero__copy">

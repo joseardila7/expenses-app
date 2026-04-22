@@ -3,8 +3,13 @@ import { redirect } from "next/navigation";
 import { AuthForms } from "@/components/auth-forms";
 import { getAuthenticatedUser } from "@/lib/auth";
 
-export default async function LoginPage() {
+type LoginPageProps = {
+  searchParams: Promise<{ next?: string }>;
+};
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
   const user = await getAuthenticatedUser();
+  const { next } = await searchParams;
 
   if (user) {
     redirect("/");
@@ -55,7 +60,7 @@ export default async function LoginPage() {
           </div>
         </div>
 
-        <AuthForms />
+        <AuthForms nextPath={next} />
       </section>
     </main>
   );

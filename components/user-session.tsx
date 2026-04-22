@@ -1,4 +1,5 @@
 import { logout } from "@/app/auth/actions";
+import { SubmitButton } from "@/components/submit-button";
 
 type UserSessionProps = {
   displayName: string;
@@ -14,9 +15,11 @@ export function UserSession({ displayName, email }: UserSessionProps) {
       </div>
 
       <form action={logout}>
-        <button type="submit" className="button button--ghost button--small">
-          Salir
-        </button>
+        <SubmitButton
+          idleLabel="Salir"
+          pendingLabel="Saliendo..."
+          className="button button--ghost button--small"
+        />
       </form>
     </div>
   );

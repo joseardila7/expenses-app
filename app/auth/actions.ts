@@ -11,6 +11,7 @@ export async function login(
   formData: FormData,
 ): Promise<ActionState> {
   void previousState;
+  const nextPath = normalizeNextPath(String(formData.get("nextPath") ?? "/"));
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
 
@@ -29,7 +30,7 @@ export async function login(
   }
 
   await persistSession(data.session);
-  redirect("/");
+  redirect(nextPath);
 }
 
 export async function signup(
@@ -37,6 +38,7 @@ export async function signup(
   formData: FormData,
 ): Promise<ActionState> {
   void previousState;
+  const nextPath = normalizeNextPath(String(formData.get("nextPath") ?? "/"));
   const displayName = String(formData.get("displayName") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
@@ -66,7 +68,7 @@ export async function signup(
 
   if (data.session) {
     await persistSession(data.session);
-    redirect("/");
+    redirect(nextPath);
   }
 
   return {
@@ -79,4 +81,12 @@ export async function signup(
 export async function logout() {
   await clearSession();
   redirect("/login");
+}
+
+function normalizeNextPath(nextPath: string) {
+  if (!nextPath || !nextPath.startsWith("/") || nextPath.startsWith("//")) {
+    return "/";
+  }
+
+  return nextPath;
 }

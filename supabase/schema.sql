@@ -23,10 +23,28 @@ create table if not exists public.group_members (
   primary key (group_id, user_id)
 );
 
+create table if not exists public.group_invitations (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references public.groups(id) on delete cascade,
+  group_name_snapshot text not null,
+  invited_email text not null,
+  invited_by_user_id uuid not null references auth.users(id) on delete cascade,
+  invited_by_name_snapshot text,
+  token text not null unique,
+  status text not null default 'pending',
+  created_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  accepted_user_id uuid references auth.users(id) on delete set null,
+  accepted_name_snapshot text,
+  revoked_at timestamptz
+);
+
 create table if not exists public.participants (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references public.groups(id) on delete cascade,
   name text not null,
+  user_id uuid references auth.users(id) on delete set null,
+  contact_email text,
   deleted_at timestamptz
 );
 
@@ -58,6 +76,16 @@ create table if not exists public.payments (
 alter table public.groups add column if not exists owner_user_id uuid references auth.users(id) on delete set null;
 alter table public.group_members add column if not exists role text not null default 'member';
 alter table public.group_members add column if not exists created_at timestamptz not null default now();
+alter table public.group_invitations add column if not exists status text not null default 'pending';
+alter table public.group_invitations add column if not exists created_at timestamptz not null default now();
+alter table public.group_invitations add column if not exists accepted_at timestamptz;
+alter table public.group_invitations add column if not exists accepted_user_id uuid references auth.users(id) on delete set null;
+alter table public.group_invitations add column if not exists accepted_name_snapshot text;
+alter table public.group_invitations add column if not exists revoked_at timestamptz;
+alter table public.group_invitations add column if not exists group_name_snapshot text;
+alter table public.group_invitations add column if not exists invited_by_name_snapshot text;
+alter table public.participants add column if not exists user_id uuid references auth.users(id) on delete set null;
+alter table public.participants add column if not exists contact_email text;
 
 do $$
 begin
@@ -70,12 +98,31 @@ begin
       add constraint group_members_role_check
       check (role in ('owner', 'member'));
   end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'group_invitations_status_check'
+  ) then
+    alter table public.group_invitations
+      add constraint group_invitations_status_check
+      check (status in ('pending', 'accepted', 'revoked'));
+  end if;
 end
 $$;
 
 create index if not exists groups_owner_user_id_idx on public.groups(owner_user_id);
 create index if not exists group_members_user_id_idx on public.group_members(user_id);
+create index if not exists group_invitations_group_id_idx on public.group_invitations(group_id);
+create index if not exists group_invitations_email_idx on public.group_invitations(lower(invited_email));
+create unique index if not exists group_invitations_pending_unique_idx
+on public.group_invitations(group_id, lower(invited_email))
+where status = 'pending';
 create index if not exists participants_group_id_idx on public.participants(group_id);
+create index if not exists participants_user_id_idx on public.participants(user_id);
+create unique index if not exists participants_group_user_unique_idx
+on public.participants(group_id, user_id)
+where user_id is not null;
 create index if not exists expenses_group_id_idx on public.expenses(group_id);
 create index if not exists expenses_paid_by_idx on public.expenses(paid_by_participant_id);
 create index if not exists expense_shares_expense_id_idx on public.expense_shares(expense_id);

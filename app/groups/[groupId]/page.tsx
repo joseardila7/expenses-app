@@ -7,6 +7,7 @@ import { ConfirmAction } from "@/components/confirm-action";
 import { CreateExpenseForm, CreateParticipantForm } from "@/components/forms";
 import { ErrorPanel } from "@/components/error-panel";
 import { ExpenseList } from "@/components/expense-list";
+import { GroupInvitationsPanel } from "@/components/group-invitations-panel";
 import { ParticipantsPanel } from "@/components/participants-panel";
 import { PaymentsList } from "@/components/payments-list";
 import { UpgradeNotice } from "@/components/upgrade-notice";
@@ -124,6 +125,11 @@ export default async function GroupPage({ params }: GroupPageProps) {
             balances={snapshot.balances}
             groupId={snapshot.group.id}
             compact
+          />
+          <GroupInvitationsPanel
+            groupId={snapshot.group.id}
+            groupName={snapshot.group.name}
+            invitations={snapshot.invitations}
           />
           <section className="panel panel--form panel--compact">
             <div className="panel__header">
