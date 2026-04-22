@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
 
-import { acceptGroupInvitation } from "@/app/actions";
+import { AcceptInvitationForm } from "@/components/accept-invitation-form";
 import { ErrorPanel } from "@/components/error-panel";
-import { SubmitButton } from "@/components/submit-button";
 import { getAuthenticatedProfile } from "@/lib/auth";
 import { getInvitationByToken } from "@/lib/supabase-data";
 
@@ -82,31 +81,7 @@ export default async function InvitationPage({ params }: InvitationPageProps) {
         </div>
 
         {canAccept ? (
-          <form action={acceptGroupInvitation} className="stack-form form-card form-card--compact">
-            <input type="hidden" name="token" value={token} />
-            <label className="field">
-              <span>Nombre con el que aparecerás en este grupo</span>
-              <input
-                name="participantName"
-                type="text"
-                defaultValue={user.displayName}
-                placeholder="María"
-                autoComplete="name"
-                required
-              />
-            </label>
-
-            <p className="panel__subcopy">
-              Al aceptar, tu cuenta quedará vinculada al grupo y se creará tu participante con este
-              nombre.
-            </p>
-
-            <SubmitButton
-              idleLabel="Aceptar invitación"
-              pendingLabel="Aceptando..."
-              className="button button--primary"
-            />
-          </form>
+          <AcceptInvitationForm token={token} defaultParticipantName={user.displayName} />
         ) : (
           <p className="empty-state">
             {invitation.invitedByUserId === user.id

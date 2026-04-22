@@ -134,17 +134,20 @@ export async function revokeGroupInvitation(
   return { status: "success", message: "Invitación revocada." };
 }
 
-export async function acceptGroupInvitation(formData: FormData) {
+export async function acceptGroupInvitation(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const user = await requireAuthenticatedProfile();
   const token = String(formData.get("token") ?? "").trim();
   const participantName = String(formData.get("participantName") ?? "").trim();
 
   if (!token) {
-    redirect("/");
+    return { status: "error", message: "No se pudo identificar la invitación." };
   }
 
   if (!participantName) {
-    redirect(`/invitations/${token}`);
+    return { status: "error", message: "Escribe el nombre con el que aparecerás en el grupo." };
   }
 
   const supabase = createSupabaseUserClient(user.accessToken);
@@ -155,7 +158,7 @@ export async function acceptGroupInvitation(formData: FormData) {
     .maybeSingle();
 
   if (invitationResult.error || !invitationResult.data) {
-    redirect("/");
+    return { status: "error", message: "La invitación no existe o ya no está disponible." };
   }
 
   const invitation = invitationResult.data;
@@ -165,20 +168,23 @@ export async function acceptGroupInvitation(formData: FormData) {
     invitation.invited_email !== user.email.toLowerCase() ||
     invitation.invited_by_user_id === user.id
   ) {
-    redirect(`/invitations/${token}`);
+    return {
+      status: "error",
+      message: "Esta invitación ya no está pendiente o no pertenece a tu cuenta.",
+    };
   }
 
-  const membership = await supabase.from("group_members").upsert(
-    {
-      group_id: invitation.group_id,
-      user_id: user.id,
-      role: "member",
-    },
-    { onConflict: "group_id,user_id", ignoreDuplicates: false },
-  );
+  const membership = await supabase.from("group_members").insert({
+    group_id: invitation.group_id,
+    user_id: user.id,
+    role: "member",
+  });
 
-  if (membership.error) {
-    redirect(`/invitations/${token}`);
+  if (membership.error && membership.error.code !== "23505") {
+    return {
+      status: "error",
+      message: explainWriteError(membership.error.message, "acceso al grupo"),
+    };
   }
 
   const participantSynced = await syncAcceptedInvitationParticipant({
@@ -190,10 +196,14 @@ export async function acceptGroupInvitation(formData: FormData) {
   });
 
   if (!participantSynced) {
-    redirect(`/invitations/${token}`);
+    return {
+      status: "error",
+      message:
+        "No se pudo vincular tu participante al grupo. Revisa las políticas de Supabase y vuelve a intentarlo.",
+    };
   }
 
-  await supabase
+  const acceptanceUpdate = await supabase
     .from("group_invitations")
     .update({
       status: "accepted",
@@ -203,7 +213,15 @@ export async function acceptGroupInvitation(formData: FormData) {
     })
     .eq("id", invitation.id);
 
+  if (acceptanceUpdate.error) {
+    return {
+      status: "error",
+      message: explainWriteError(acceptanceUpdate.error.message, "invitación"),
+    };
+  }
+
   revalidatePath("/");
+  revalidatePath(`/invitations/${token}`);
   revalidatePath(`/groups/${invitation.group_id}`);
   redirect(`/groups/${invitation.group_id}`);
 }
